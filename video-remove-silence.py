@@ -15,7 +15,7 @@ import ffprobe
 
 parser = argparse.ArgumentParser()
 parser.add_argument('path', type=str, help='path to video')
-parser.add_argument('--threshold-level', type=float, default=-30, help='threshold level in dB')
+parser.add_argument('--threshold-level', type=float, default=-35, help='threshold level in dB')
 parser.add_argument('--threshold-duration', type=float, default=0.4, help='threshold duration in seconds')
 parser.add_argument('--constant', type=float, default=0, help='duration constant transform value')
 parser.add_argument('--sublinear', type=float, default=0, help='duration sublinear transform factor')
@@ -117,8 +117,10 @@ def find_silences(filename):
                 out_wav.setsampwidth(sample_width)
                 out_wav.setframerate(frame_rate)
                 for start, end in silence_regions:
-                    wav.setpos(start)
-                    frames = wav.readframes(end-start)
+                    s = int(start * frame_rate)
+                    e = int(end * frame_rate)
+                    wav.setpos(s)
+                    frames = wav.readframes(e-s)
                     out_wav.writeframes(frames)
 
     return silence_regions, including_end
@@ -149,6 +151,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print('Found {} gaps, {:.1f} seconds total'.format(len(silences), total_duration))
+
+    for i, (start, end) in enumerate(silences):
+        diff = end - start
+        print(f"Silence {i} is {diff:0.1f} seconds from {start:0.1f} to {end:0.1f}")
+
     regions = []
     if silences[0][0] > 0:
         regions.append((0, silences[0][0], False))
