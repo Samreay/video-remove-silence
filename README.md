@@ -5,10 +5,14 @@ Tool for removing silence from video files.
 ## Usage
 
 ```
-video-remove-silence some_file.mp4
+python video-remove-silence.py some_file.mp4
 ```
 
 ## Dependencies
 
-- Python 3.5+
+Python deps in `requirements.txt`.
+
+External deps are:
+
+- Python 3.6+
 - FFmpeg
