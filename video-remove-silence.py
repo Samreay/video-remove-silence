@@ -9,12 +9,12 @@ import subprocess
 import sys
 import tempfile
 import wave
-
-import ffprobe
+import json
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('path', type=str, help='path to video')
+parser.add_argument('--audio-file', type=str, default=None, help='Optional audio file - if specified use this audio instead of mp4 file. Must be .wav')
 parser.add_argument('--threshold-level', type=float, default=-35, help='threshold level in dB')
 parser.add_argument('--threshold-duration', type=float, default=0.4, help='threshold duration in seconds')
 parser.add_argument('--constant', type=float, default=0, help='duration constant transform value')
@@ -24,6 +24,44 @@ parser.add_argument('--save-silence', type=str, help='filename for saving silenc
 parser.add_argument('--recalculate-time-in-description', type=str, help='path to text file')
 parser.add_argument("--initial-grace-period", type=float, default=3.0, help="Allow this much silence at the start in seconds")
 args = parser.parse_args()
+
+
+def _get_json(path):
+    result = subprocess.run(['ffprobe', path, '-loglevel', 'quiet', '-print_format', 'json', '-show_streams'], stdout=subprocess.PIPE)
+    result.check_returncode()
+    return json.loads(result.stdout)
+
+def get_resolution(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            return stream['width'], stream['height']
+
+def get_frames(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'nb_frames' in stream:
+                return int(stream['nb_frames'])
+
+def get_duration(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'duration' in stream:
+                return float(stream['duration'])
+            else:
+                parts = stream['tags']['DURATION'].split(':')
+                assert len(parts) == 3
+                return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+
+def get_frame_rate(path):
+    for stream in _get_json(path)['streams']:
+        if stream['codec_type'] == 'video':
+            if 'avg_frame_rate' in stream:
+                assert stream['avg_frame_rate'].count('/') <= 1
+                parts = stream['avg_frame_rate'].split('/')
+                result = float(parts[0])
+                if len(parts) == 2:
+                    result /= float(parts[1])
+                return result
 
 
 def find_silences(filename):
@@ -125,24 +163,32 @@ def find_silences(filename):
 
     return silence_regions, including_end
 
+
 def extract_audio(input_filename, output_filename):
     command = [ 'ffmpeg', '-i', input_filename, '-acodec', 'pcm_s16le', '-f', 'wav', '-y', output_filename ]
+    print(f"###### Executing command:    {' '.join(command)}\n\n")
     subprocess.run(command, stderr=subprocess.PIPE).check_returncode()
 
 
 if __name__ == "__main__":
-    audio_file = tempfile.NamedTemporaryFile(delete=False)
-    audio_file.close()
-
-    print('Extracting audio...')
-    extract_audio(args.path, audio_file.name)
+    if args.audio_file is not None:
+        audio_file = args.audio_file
+        remove_audio = False
+        print('Have extracted audio file')
+    else:
+        audio_file = tempfile.NamedTemporaryFile(delete=False)
+        audio_file.close()
+        print('Extracting audio...')
+        extract_audio(args.path, audio_file.name)
+        audio_file = audio_file.name
+        remove_audio = True
 
     def transform_duration(duration):
         global args
         return args.constant + args.sublinear * math.log(duration + 1) + args.linear * duration
 
     print('Finding gaps...')
-    silences, including_end = find_silences(audio_file.name)
+    silences, including_end = find_silences(audio_file)
 
     total_duration = sum((end-start for start, end in silences))
     print(f"Total duration is {total_duration}")
@@ -171,15 +217,15 @@ if __name__ == "__main__":
     def format_offset(offset):
         return '{}:{}:{}'.format(int(offset) // 3600, int(offset) % 3600 // 60, offset % 60)
 
-    frames = ffprobe.get_frames(args.path)
-    duration = ffprobe.get_duration(args.path)
+    frames = get_frames(args.path)
+    duration = get_duration(args.path)
     if frames:
         frame_rate = frames / duration # N.B. Possibly we need to simply read frame rate instead of calculating it.
     else:
-        frame_rate = ffprobe.get_frame_rate(args.path)
+        frame_rate = get_frame_rate(args.path)
         frames = int(frame_rate * duration)
 
-    width, height = ffprobe.get_resolution(args.path)
+    width, height = get_resolution(args.path)
 
     def closest_frames(duration, frame_rate):
         return int((duration + 1 / frame_rate / 2) // (1 / frame_rate))
@@ -211,6 +257,7 @@ if __name__ == "__main__":
 
     print('Processing {} frames...'.format(frames))
     command = [ 'ffmpeg', '-i', args.path, '-f', 'image2pipe', '-pix_fmt', 'rgb24', '-vcodec', 'rawvideo', '-' ]
+    print(f"###### Executing command:    {' '.join(command)}\n\n")
     decoder = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     decoder.stderr.close()
@@ -220,13 +267,14 @@ if __name__ == "__main__":
     print(f"Video track going to {video_track.name}")
     command = [ 'ffmpeg', '-framerate', str(frame_rate), '-s', '{}x{}'.format(width, height), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-i', '-' ]
     command += [ '-f', 'mp4', '-pix_fmt', 'yuv420p', '-crf', '18', '-y', video_track.name ]
+    print(f"###### Executing command:    {' '.join(command)}\n\n")
     encoder = subprocess.Popen(command, stdin=subprocess.PIPE)
 
     audio_track = tempfile.NamedTemporaryFile(delete=False)
     audio_track.close()
     print(f"Audio track going to {audio_track.name}")
 
-    wav = wave.open(audio_file.name)
+    wav = wave.open(audio_file)
     out_wav = wave.open(audio_track.name, 'wb')
     size = wav.getnframes()
     channels = wav.getnchannels()
@@ -303,7 +351,8 @@ if __name__ == "__main__":
         out_wav.writeframes(compress_audio(args, wav, audio_start_frame, audio_end_frame, audio_result_frames))
 
     wav.close()
-    os.unlink(audio_file.name)
+    if remove_audio:
+        os.unlink(audio_file)
     out_wav.close()
 
     encoder.stdin.close()
@@ -315,7 +364,8 @@ if __name__ == "__main__":
 
     name, extension = os.path.splitext(args.path)
     command = [ 'ffmpeg', '-f', 'mp4', '-i', video_track.name, '-f', 'wav', '-i', audio_track.name ]
-    command += [ '-c:v', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-y', '{}_result{}'.format(name, extension) ]
+    command += [ '-c:v', 'libx264', '-crf', '23',  '-c:a', 'aac', '-ab', '128000', '-ac', '1', '-y', '{}_result{}'.format(name, extension) ]
+    print(f"Executing command:    {' '.join(command)}\n\n")
     subprocess.run(command)
 
     os.unlink(audio_track.name)
