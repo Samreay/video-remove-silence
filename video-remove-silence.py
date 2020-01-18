@@ -10,7 +10,7 @@ import sys
 import tempfile
 import wave
 import json
-
+import numpy as np
 
 parser = argparse.ArgumentParser()
 parser.add_argument('path', type=str, help='path to video')
@@ -21,6 +21,7 @@ parser.add_argument('--constant', type=float, default=0, help='duration constant
 parser.add_argument('--sublinear', type=float, default=0, help='duration sublinear transform factor')
 parser.add_argument('--linear', type=float, default=0.2, help='duration linear transform factor')
 parser.add_argument('--save-silence', type=str, help='filename for saving silence')
+parser.add_argument('--smooth', type=int, default=1, help='Accelerated speed up. This needs to be False if youre using recalculate-time-in-description')
 parser.add_argument('--recalculate-time-in-description', type=str, help='path to text file')
 parser.add_argument("--initial-grace-period", type=float, default=3.0, help="Allow this much silence at the start in seconds")
 args = parser.parse_args()
@@ -145,7 +146,10 @@ def find_silences(filename):
         silence_regions = ( (start, end) for start, end in to_regions(is_silence) if end-start >= blend_duration )
         silence_regions = ( (start + (half_blend_frames if start > 0 else 0), end - (half_blend_frames if end < size else 0)) for start, end in silence_regions )
         silence_regions = [ (start, end) for start, end in silence_regions if end-start >= threshold_frames ]
-        silence_regions = [ (start, end) for start, end in silence_regions if start >= grace_frames ]
+        silence_regions = [ (start, end) for start, end in silence_regions if start >= grace_frames or (start < grace_frames and end > grace_frames)  ]
+        for index, (start, end) in enumerate(silence_regions):
+            if start < grace_frames:
+                silence_regions[index] = (grace_frames, end)
         including_end = len(silence_regions) == 0 or silence_regions[-1][1] == size
         silence_regions = [ (start/frame_rate, end/frame_rate) for start, end in silence_regions ]
 
@@ -182,6 +186,8 @@ if __name__ == "__main__":
         extract_audio(args.path, audio_file.name)
         audio_file = audio_file.name
         remove_audio = True
+    if args.smooth:
+        print("Doing smoothing!!!!!")
 
     def transform_duration(duration):
         global args
@@ -328,9 +334,18 @@ if __name__ == "__main__":
             duration = (end_frame - start_frame) / frame_rate
             new_duration = transform_duration(duration)
             new_frames_count = closest_frames(new_duration, frame_rate)
+            weights = np.linspace(1, 0, new_frames_count)
             new_frames = set()
-            for index in range(new_frames_count):
-                new_frame = start_frame + int((index + 0.5)*(end_frame-start_frame)/new_frames_count)
+            for index, weight in enumerate(weights):
+                new_frame = start_frame + int((index + 0.5) * (end_frame - start_frame) / new_frames_count)
+                original_frame = start_frame + index
+                # This does linear interpolation between frames
+                # Lets make this smooth
+                if args.smooth:
+                    w2 = weight ** 0.8
+                    new_frame2 = (1 - w2) * new_frame + w2 * original_frame
+                    new_frame = new_frame2
+                new_frame = int(new_frame)
                 assert not new_frame in new_frames
                 assert new_frame >= start_frame
                 assert new_frame < end_frame
