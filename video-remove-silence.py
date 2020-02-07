@@ -14,6 +14,7 @@ import numpy as np
 
 parser = argparse.ArgumentParser()
 parser.add_argument('path', type=str, help='path to video')
+parser.add_argument('--output-file', type=str, default=None, help='Optional lcoation of output file')
 parser.add_argument('--audio-file', type=str, default=None, help='Optional audio file - if specified use this audio instead of mp4 file. Must be .wav')
 parser.add_argument('--threshold-level', type=float, default=-35, help='threshold level in dB')
 parser.add_argument('--threshold-duration', type=float, default=0.4, help='threshold duration in seconds')
@@ -188,6 +189,12 @@ if __name__ == "__main__":
         remove_audio = True
     if args.smooth:
         print("Doing smoothing!!!!!")
+
+    name, extension = os.path.splitext(args.path)
+    output_name = f"{name}_result.{extension}"
+    if args.output_file is not None:
+        output_name = args.output_file
+    print(f"Setting output to {output_name}")
 
     def transform_duration(duration):
         global args
@@ -377,9 +384,8 @@ if __name__ == "__main__":
 
     decoder.terminate()
 
-    name, extension = os.path.splitext(args.path)
     command = [ 'ffmpeg', '-f', 'mp4', '-i', video_track.name, '-f', 'wav', '-i', audio_track.name ]
-    command += [ '-c:v', 'libx264', '-crf', '23',  '-c:a', 'aac', '-ab', '128000', '-ac', '1', '-y', '{}_result{}'.format(name, extension) ]
+    command += [ '-c:v', 'libx264', '-crf', '23',  '-c:a', 'aac', '-ab', '128000', '-ac', '1', '-y', '{}'.format(output_name) ]
     print(f"Executing command:    {' '.join(command)}\n\n")
     subprocess.run(command)
 
