@@ -24,7 +24,7 @@ parser.add_argument('--linear', type=float, default=0.08, help='duration linear 
 parser.add_argument('--save-silence', type=str, help='filename for saving silence')
 parser.add_argument('--smooth', type=int, default=1, help='Accelerated speed up. This needs to be False if youre using recalculate-time-in-description')
 parser.add_argument('--recalculate-time-in-description', type=str, help='path to text file')
-parser.add_argument("--initial-grace-period", type=float, default=3.0, help="Allow this much silence at the start in seconds")
+parser.add_argument("--initial-grace-period", type=float, default=0.0, help="Allow this much silence at the start in seconds")
 args = parser.parse_args()
 
 
@@ -147,10 +147,11 @@ def find_silences(filename):
         silence_regions = ( (start, end) for start, end in to_regions(is_silence) if end-start >= blend_duration )
         silence_regions = ( (start + (half_blend_frames if start > 0 else 0), end - (half_blend_frames if end < size else 0)) for start, end in silence_regions )
         silence_regions = [ (start, end) for start, end in silence_regions if end-start >= threshold_frames ]
-        silence_regions = [ (start, end) for start, end in silence_regions if start >= grace_frames or (start < grace_frames and end > grace_frames)  ]
-        for index, (start, end) in enumerate(silence_regions):
-            if start < grace_frames:
-                silence_regions[index] = (grace_frames, end)
+        silence_regions = [ (start, end) for start, end in silence_regions if grace_frames == 0 or start >= grace_frames or (start < grace_frames and end > grace_frames)  ]
+        if grace_frames:
+            for index, (start, end) in enumerate(silence_regions):
+                if start < grace_frames:
+                    silence_regions[index] = (grace_frames, end)
         including_end = len(silence_regions) == 0 or silence_regions[-1][1] == size
         silence_regions = [ (start/frame_rate, end/frame_rate) for start, end in silence_regions ]
 
@@ -331,6 +332,7 @@ if __name__ == "__main__":
                     result[(left_length-crossfade_length+i)*frame_width+channel*sample_width:(left_length-crossfade_length+i)*frame_width+(channel+1)*sample_width] = int(signal_left*l + signal_right*r).to_bytes(sample_width, 'little', signed=True)
             return result
 
+    print("############ Compressing regions")
     audio_remainder_frames = 0.0
     for start, end, is_silence in regions:
         start_frame = int(start * frame_rate)
@@ -338,10 +340,14 @@ if __name__ == "__main__":
         audio_start_frame = min(int(start * audio_frame_rate), size)
         audio_end_frame = size if end is None else min(int(end * audio_frame_rate), size)
         if is_silence:
+            print(f"############ Compressing from {start_frame} to {end_frame}")
             duration = (end_frame - start_frame) / frame_rate
             new_duration = transform_duration(duration)
             new_frames_count = closest_frames(new_duration, frame_rate)
             weights = np.linspace(1, 0, new_frames_count)
+            if start_frame < 10:
+                print("############ Linear speed up at the start!  ###################")
+                weights = np.zeros(weights.shape)
             new_frames = set()
             for index, weight in enumerate(weights):
                 new_frame = start_frame + int((index + 0.5) * (end_frame - start_frame) / new_frames_count)
